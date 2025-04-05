@@ -1,146 +1,215 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <sys/time.h>
 #include <pthread.h>
 #include "sudoku.h"
-#include<stdlib.h>
-#include <thread>
-using namespace std;
- typedef struct {
-   int first;
-   int last;
-   int** tqa;//问题和结果数组(test question and answer)
-  }threadtask;
- 
-void* threadfun(void* args){ //这个是线程运行函数，每个线程解决一部分数独题目
-threadtask* task = (threadtask*) args;
-    int first=task->first;
-    int last=task->last;
-    int** tqa=task->tqa;
-    int i=0;
- 
-    for(i=first;i<last;i++){
-    solve_sudoku_dancing_links(tqa[i]);
- 
+#include <sys/time.h>  // 高精度时间测量
+
+// 获取当前时间戳（毫秒级精度）
+double get_timestamp() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
 }
-    pthread_exit(NULL);
+
+#define N 81
+#define MAX_QUEUE_SIZE 1024
+#define MAX_THREADS 16
+
+/* 全局数据结构 */
+typedef struct {
+    int id;             // 题目ID
+    int puzzle[N];      // 数独存储
+    int solved;         // 解决标志
+} SudokuTask;
+
+// 线程间共享数据
+struct {
+    SudokuTask* tasks;      // 任务数组
+    int capacity;           // 数组容量
+    int count;              // 实际题目数
+    
+    int prod_id;            // 生产者当前分配ID
+    int cons_id;            // 消费者当前处理ID
+    int output_id;          // 输出线程当前ID
+    
+    pthread_mutex_t lock;   // 全局锁
+    pthread_cond_t cond;    // 条件变量
+} shared_data;
+
+/* 线程池结构 */
+typedef struct {
+    pthread_t threads[MAX_THREADS];
+    int running;
+} ThreadPool;
+
+/* 初始化共享数据 */
+void init_shared(int capacity) {
+    shared_data.tasks = (SudokuTask *)malloc(capacity * sizeof(SudokuTask));
+    shared_data.capacity = capacity;
+    shared_data.count = 0;
+    shared_data.prod_id = 0;
+    shared_data.cons_id = 0;
+    shared_data.output_id = 0;
+    pthread_mutex_init(&shared_data.lock, NULL);
+    pthread_cond_init(&shared_data.cond, NULL);
+}
+
+/* 文件读取线程 */
+void* file_reader(void* arg) {
+    char* filename = (char*)arg;
+    
+    FILE* fp = fopen(filename, "r");
+    if (!fp) {
+        perror("无法打开文件");
+        return NULL;
+    }
+
+    // 单次读取完整文件
+    char buffer[256];
+    int line_count = 0;
+    while (fgets(buffer, sizeof(buffer), fp)) {
+        // 动态扩容检查
+        if (line_count >= shared_data.capacity) {
+            int new_cap = shared_data.capacity * 2;
+            SudokuTask* new_tasks = (SudokuTask *)realloc(shared_data.tasks, 
+                                      new_cap * sizeof(SudokuTask));
+            if (!new_tasks) {
+                perror("内存扩容失败");
+                break;
+            }
+            shared_data.tasks = new_tasks;
+            shared_data.capacity = new_cap;
+        }
+
+        // 写入任务数组
+        SudokuTask* task = &shared_data.tasks[line_count];
+        for (int i = 0; i < N; i++) {
+            task->puzzle[i] = buffer[i] - '0';
+        }
+        task->id = line_count;
+        task->solved = 0;
+        line_count++;
+    }
+    
+    // 更新全局计数
+    pthread_mutex_lock(&shared_data.lock);
+    shared_data.count = line_count;
+    pthread_cond_broadcast(&shared_data.cond);
+    pthread_mutex_unlock(&shared_data.lock);
+    
+    fclose(fp);
     return NULL;
 }
- 
- 
- 
-int main(int argc, char* argv[])
-{
-    char testfile[128]= "\0";
-    while(scanf("%s",testfile)){//接收文件路径输入
-        char puzzle[128];
- 
-    FILE* f1 = fopen(testfile, "r");
-    if (!f1) {
-        perror("无法打开文件");
-        continue;  // 跳过错误文件
+
+/* 工作线程函数 */
+void* worker_func(void* arg) {
+    while (1) {
+        pthread_mutex_lock(&shared_data.lock);
+        
+        // 等待可处理任务
+        while (shared_data.cons_id >= shared_data.count) {
+            pthread_cond_wait(&shared_data.cond, &shared_data.lock);
+        }
+        
+        // 获取任务
+        int task_id = shared_data.cons_id++;
+        SudokuTask* task = &shared_data.tasks[task_id];
+        
+        pthread_mutex_unlock(&shared_data.lock);
+
+        // 实际解题（无锁操作）
+        solve_sudoku_dancing_links(task->puzzle);
+        
+        // 标记完成
+        pthread_mutex_lock(&shared_data.lock);
+        task->solved = 1;
+        pthread_cond_broadcast(&shared_data.cond); // 通知输出线程
+        pthread_mutex_unlock(&shared_data.lock);
     }
-    int testnumber=0;
-    while (fgets(puzzle, sizeof(puzzle), f1) != NULL) {
-        testnumber++;//统计题目数量
-    }
-    fclose(f1);
- 
-    unsigned int num_cores = thread::hardware_concurrency();
-    int threadnumber=num_cores;//线程数
- 
-    int i=0;
-    int row = testnumber,col = N;
-    //申请
-    int **testqa = (int**)malloc(sizeof(int*) * row);  //sizeof(int*),不能少*，一个指针的内存大小，每个元素是一个指针。
-    for (i = 0;i < row;i++)
-    {
-        testqa[i] = (int*)malloc(sizeof(int) * col);//保存结果的数组
-    }
- 
- 
- 
- 
-    FILE* fp = fopen(testfile, "r");
-    i=0;
-    char tt[testnumber][128];//临时数组
-    while (fgets(tt[i], sizeof tt[i], fp) != NULL) {
-        i++;
-    }
- 
- 
-    //输入转换
-    for(int t1=0;t1<testnumber;t1++){
-        for (int t2 = 0; t2 < N; t2++) {
-            testqa[t1][t2] = (int)(tt[t1][t2] - '0');
+    return NULL;
+}
+
+/* 输出线程函数 */
+void* output_func(void* arg) {
+    while (1) {
+        pthread_mutex_lock(&shared_data.lock);
+        
+        // 等待当前ID完成
+        while (shared_data.output_id < shared_data.count &&
+              !shared_data.tasks[shared_data.output_id].solved) {
+            pthread_cond_wait(&shared_data.cond, &shared_data.lock);
+        }
+        
+        // 按顺序输出所有已完成
+        while (shared_data.output_id < shared_data.count &&
+              shared_data.tasks[shared_data.output_id].solved) {
+            SudokuTask* task = &shared_data.tasks[shared_data.output_id];
+            for (int i = 0; i < N; i++) {
+                putchar('0' + task->puzzle[i]);
+            }
+            putchar('\n');
+            shared_data.output_id++;
+        }
+        
+        pthread_mutex_unlock(&shared_data.lock);
+        
+        // 全部完成则退出
+        if (shared_data.output_id >= shared_data.count) {
+            break;
         }
     }
- 
- 
-    int pertask= testnumber/threadnumber;
-    threadtask threadgroup[threadnumber];
-    pthread_t th[threadnumber]; 
- 
-    if(pertask>=1){//为每个线程分配任务
- 
-   for(i=0;i<threadnumber;i++)
-   {
-     int first=(int)pertask*i;//开始平均分配任务
-     int last;
-     if(i!=threadnumber-1)
-       last=(int)pertask*(i+1);
-     else
-       last=testnumber;
- 
- 
-     threadgroup[i].first=first;
-     threadgroup[i].last=last;
-     threadgroup[i].tqa=testqa;
- 
-     if(pthread_create(&th[i], NULL, threadfun, &threadgroup[i])!=0)
-     {//创建线程
-       perror("pthread_create failed");
-       exit(1);
-     }
- 
-   }
- 
-   for(i=0;i<threadnumber;i++)
-   pthread_join(th[i], NULL);
- 
- 
- 
+    return NULL;
 }
-else{//一个线程情况
- threadgroup[0].first=0;
-     threadgroup[0].last=testnumber;
-     threadgroup[0].tqa=testqa;
-     if(pthread_create(&th[0], NULL, threadfun, &threadgroup[0])!=0)
-     {
-       perror("pthread_create failed");
-       exit(1);
-     }
-pthread_join(th[0], NULL);
+
+/* 初始化线程池 */
+void init_pool(ThreadPool* pool) {
+    for (int i = 0; i < MAX_THREADS; i++) {
+        pthread_create(&pool->threads[i], NULL, worker_func, NULL);
+    }
+    pool->running = 1;
 }
- 
- 
- 
- 
-int j=0;
-int k=0;
-//输出结果
-for(j=0;j<testnumber;j++){
-for(k=0;k<N;k++){
-printf("%d",testqa[j][k]);
-}
-printf("\n");
-}
- 
- 
-free(testqa);
-fflush(stdout);
-}
-  return 0;
+
+int main(int argc, char* argv[]) {
+    ThreadPool pool;
+    init_shared(100);  // 初始容量100
+    
+    // 启动工作线程
+    init_pool(&pool);
+
+    // 主线程作为文件读取者
+    char filename[256];
+    while (scanf("%255s", filename) == 1) {
+        double start_time = get_timestamp(); // 开始计时
+        pthread_t reader;
+        pthread_create(&reader, NULL, file_reader, filename);
+        
+        // 等待文件读取完成
+        pthread_join(reader, NULL);
+        
+        // 启动输出线程
+        pthread_t output_thread;
+        pthread_create(&output_thread, NULL, output_func, NULL);
+        pthread_join(output_thread, NULL);
+
+        double end_time = get_timestamp(); // 结束计时
+        double total_time = end_time - start_time;
+
+        // 输出耗时到标准错误（避免与结果混合）
+        fprintf(stderr, "文件 %s 处理耗时: %.2f 毫秒\n", 
+                filename, total_time);
+        
+        // 重置状态
+        pthread_mutex_lock(&shared_data.lock);
+        shared_data.cons_id = 0;
+        shared_data.output_id = 0;
+        shared_data.count = 0;
+        pthread_mutex_unlock(&shared_data.lock);
+    }
+    
+    // 清理资源
+    free(shared_data.tasks);
+    return 0;
 }
