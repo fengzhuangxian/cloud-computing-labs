@@ -7,12 +7,6 @@
 #include "sudoku.h"
 #include <sys/time.h>  // 高精度时间测量
 
-// 获取当前时间戳（毫秒级精度）
-double get_timestamp() {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
-}
 
 #define N 81
 #define MAX_QUEUE_SIZE 1024
@@ -182,7 +176,6 @@ int main(int argc, char* argv[]) {
     // 主线程作为文件读取者
     char filename[256];
     while (scanf("%255s", filename) == 1) {
-        double start_time = get_timestamp(); // 开始计时
         pthread_t reader;
         pthread_create(&reader, NULL, file_reader, filename);
         
@@ -193,13 +186,6 @@ int main(int argc, char* argv[]) {
         pthread_t output_thread;
         pthread_create(&output_thread, NULL, output_func, NULL);
         pthread_join(output_thread, NULL);
-
-        double end_time = get_timestamp(); // 结束计时
-        double total_time = end_time - start_time;
-
-        // 输出耗时到标准错误（避免与结果混合）
-        fprintf(stderr, "文件 %s 处理耗时: %.2f 毫秒\n", 
-                filename, total_time);
         
         // 重置状态
         pthread_mutex_lock(&shared_data.lock);
