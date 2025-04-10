@@ -5,12 +5,17 @@
 #include <string.h>
 #include <pthread.h>
 #include "sudoku.h"
-#include <sys/time.h>  // 高精度时间测量
+#include <unistd.h> 
 
 
 #define N 81
 #define MAX_QUEUE_SIZE 1024
 #define MAX_THREADS 16
+
+int get_cpu_cores() {
+    int cores = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    return (cores > 0) ? cores : 1;  // 保底返回 1 核
+}
 
 /* 全局数据结构 */
 typedef struct {
@@ -35,7 +40,8 @@ struct {
 
 /* 线程池结构 */
 typedef struct {
-    pthread_t threads[MAX_THREADS];
+    pthread_t* threads;  // 动态数组
+    int num_threads;     // 实际线程数
     int running;
 } ThreadPool;
 
@@ -160,10 +166,22 @@ void* output_func(void* arg) {
 
 /* 初始化线程池 */
 void init_pool(ThreadPool* pool) {
-    for (int i = 0; i < MAX_THREADS; i++) {
-        pthread_create(&pool->threads[i], NULL, worker_func, NULL);
+    int cores = get_cpu_cores();
+    pool->num_threads = cores;
+    pool->threads = (pthread_t*)malloc(cores * sizeof(pthread_t));
+    
+    for (int i = 0; i < cores; i++) {
+        if (pthread_create(&pool->threads[i], NULL, worker_func, NULL) != 0) {
+            perror("无法创建线程");
+            exit(EXIT_FAILURE);
+        }
     }
     pool->running = 1;
+}
+
+/* 销毁线程池 */
+void destroy_pool(ThreadPool* pool) {
+    free(pool->threads);
 }
 
 int main(int argc, char* argv[]) {
@@ -196,6 +214,7 @@ int main(int argc, char* argv[]) {
     }
     
     // 清理资源
+    destroy_pool(&pool);
     free(shared_data.tasks);
     return 0;
 }
