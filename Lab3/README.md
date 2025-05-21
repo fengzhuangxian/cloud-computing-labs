@@ -1,452 +1,313 @@
-# Lab 3: A Simple Distributed Key-Value Store
+# 实验 3：Raft KV 存储系统
 
-Enter in the folder you have cloned from our lab git repo, and pull the latest commit. 
+进入从实验仓库克隆的文件夹，并拉取最新提交：
 
-`git pull`
+`git pull`  
 
-You can find this lab3's instruction in `Lab3/README.md` 
+实验3  的指导说明位于 Lab3/README.md 文件中，所有实验材料均存放在 Lab3 / 文件夹内。
 
-All materials of lab3 are in folder `Lab3/`
+## 1. 实验概述
 
-## 1. Overview
+在本实验中，您将实现一个基于 Raft 共识算法的分布式内存键值数据库（KV 存储）。该系统将能够处理客户端的请求，在多个服务器节点之间保持数据一致性，同时能够应对节点故障。
 
-Implement a simple distributed in-memory key-value database (KV store) by your own, using two-phase commit protocol or raft protocol to guarantee the consistency and robustness of your KV store.
 
-### Goals
+系统应具备以下功能：
 
-* Get to know the problems and difficulties in building a distributed system;
-* Know how to use a simple protocol to maintain consistency between multiple distributed servers;
-* Use some simple schemes to handle server failures.
+- 实现基本的键值存储操作：SET、GET、DEL
+- 使用 Raft 协议维护多节点间的数据一致性
+- 处理节点故障（更高的要求是能处理网络分区）
+- 实现客户端请求的正确重定向
 
-## 2. Background
+**任务点：补充函数代码**
 
-### 2.1 KV store
+```
+文件路径：Lab3\src\core\raft_core.cpp
 
-An in-memory key-value database (also called **key-value store**, or **KV store** in this document) is a database that keeps all its data in the main memory and uses a simple key-value data structure. 
+std::unique_ptr<Message> RaftCore::handleRequestVote(int from_node_id, const RequestVoteRequest& request)
 
-Typically, a KV-store exposes the following methods for users to store/delete/read data to/from the databases:
+void RaftCore::handleRequestVoteResponse(int from_node_id, const RequestVoteResponse& response) 
 
-- **set(key, value)**: stores the value "value" with the key "key" (some KV stores also call this command as "**put**").
-- **del(key)**: deletes any record associated with the key "key".
-- **value=get(key)**: retrieves and returns the value associated with the key "key".
+std::unique_ptr<Message> RaftCore::handleAppendEntries(int from_node_id, const AppendEntriesRequest& request) 
 
-In practice, in-memory KV store serves most user requests only with data stored in the main memory, meanwhile, it often backups its data in the hard disks thus to be durable. However, in this lab, you are not required to consider the data durability (i.e., you can only store the data in main memory).  
+void RaftCore::handleAppendEntriesResponse(int from_node_id, const AppendEntriesResponse& response) 
+```
 
-### 2.2 Distributed KV store
+## 2. Raft
 
-In large-scale cloud services, KV stores are often built in distributed manner, for the sake of **performance and robustness**.   
+2PC 协议在协调者永久故障时无法处理客户端请求，因此需引入 Raft 等高级共识协议。Raft 通过选举领导者（Leader）处理客户端请求，并通过日志复制确保节点间数据一致。
 
-For example, a KV store may distribute its data in multiple server machines, and simultaneously use those servers to serve user requests. As such, user requests can be evenly balanced to multiple servers when the load is high, and the database can survive from the failure of some servers.
+## 3. 数据库交互格式
 
-However, when the KV database is distributed, many problems arise. Among those problems, **consistency issue** may be most notorious and toughest one. For example, assume that a KV database uses two servers A and B to hold data and serve user requests. When user 1 put some key at server A, and then after a very short time user 2 and 3 each posts a get request of this key to server A and B, respectively, then how to make sure that user 2 and 3 both **get the same latest value of this key**? What is more challenging, failures can happen on servers and networks when users are posting requests.
+### 3.1 客户端请求消息格式
 
-Next, we will introduce a very simple but classic protocol to ensure consistency among distributed database servers.
+客户端向服务器发送命令使用 RESP Arrays 格式。RESP Arrays 由以下部分组成：
 
-### 2.3 Two-phase commit
+- 一个 `*` 字符作为第一个字节，后跟数组中元素的数量（十进制数字），然后是 CRLF。
+- 任意数量的 bulk strings（长度最多可达 512 MB）。
 
-Now we describe possibly the simplest (but it works!) consensus protocol called **two-phase commit**, or **2PC**. This protocol can ensure the data consistency when the database is located on multiple distributed servers, that is, **two or more machines agree to do something, or not do it, atomically**. Note that this is only a very short introduction. You are encouraged to search more materials if you have further questions (e.g., [this](https://www.bilibili.com/video/BV1at411y7iQ) is a good video about 2PC).
+Bulk string 由以下部分组成：
 
-Frist, 2PC maintains a **commit log** on each machine, which keeps track of whether commit has happened. Log is used to guarantee that all machines either commit or don’t. 
+- 一个 `$` 字节，后跟组成字符串的字节数（前缀长度），以 CRLF 结尾。
+- 实际的字符串数据。
+- 最后的 CRLF。
 
-Second, there is **one global coordinator**. It receives transactions from clients (e.g., set/delete/get) and reply results to clients, and coordinates multiple database servers, to ensure either all servers commit the transaction or all abort it.
-
-Based on above architecture, 2PC operates in two distinct phases: 
-
-1) The first phase is **prepared phase**. The global coordinator requests that all database servers (called participants) will promise to commit or rollback the transaction (e.g., set or delete a key) . Participants record promise in log, then acknowledge. If anyone votes to abort, coordinator writes "Abort" in its log and tells everyone to abort; each records "Abort" in log. 
-
-2) The second phase is **commit-or-abort phase**. After all participants respond that they are prepared, then the coordinator writes "Commit" to its log. Then the coordinator asks all participants to commit; All participants respond with ACK. After receive ACKs, the coordinator writes "Got Commit" to log.
-
-<img src="src/two-phase-commit.png" alt="two phase commit" title="two phase commit" style="zoom:40%;" />
-
-The detailed steps in 2PC are as follows:
-
-***Prepared phase:*** 
-
-1)&ensp;To commit the transaction, the coordinator starts by sending a **REQUEST-TO-PREPARE** message to each
-participant.
-
-2)&ensp;The coordinator waits for all participants to "vote" on the request.
-
-3)&ensp;In response to receiving a **REQUEST-TO-PREPARE** message, each participant votes by sending a message back to the coordinator, as follows:
-
-- It votes **PREPARED** if it is prepared to commit.
-- It may vote **NO** for any reason, usually because it cannot prepare the transaction due to a local failure.
-- It may delay voting indefinitely, for example, because the network drops the vote.
-
-***Commit-Or-Abort phase:***
-
-1)&ensp;If the coordinator receives **PREPARED** messages from all participants, it decides to commit. The transaction is now officially committed. Otherwise, it either received a **NO** message or gave up waiting for some participant, so it decides to abort.
-
-2)&ensp;The coordinator sends its decision to all participants (i.e.,**COMMIT** or **ABORT**).
-
-3)&ensp;Participants acknowledge receipt of the commit or abort by replying **DONE**.
-
-4)&ensp;After receiving **DONE** from all participants, the coordinator can reply clients with the transaction result (either success or failed), and *forget* the transaction, meaning that it can deallocate any memory it was using to keep track of information about the transaction.
-
-### 2.4 raft
-
-2PC protocol may not be able to deal with clients' requests even when coordinator fails, thus some extend methods are necessary, such as [Raft algorithm](https://raft.github.io/).
-
-You can also find more details in [Section 4.2](#42-advanced-version20-points)
-
-## 3. Your Lab Task
-
-### 3.1 Task overview
-
-<img src="src\KVStoreOverview.jpg" alt="KVStoreOverview" style="zoom:50%;" />
-
-You need to implement a simple distributed KV store. Your KV store should run as a network service on remote machine(s), which can receive clients' operations on the database and return results to clients, through network messages. To cope with failures, your are required to implement your KV store services on multiple machines (which are connected with each other through network). Use 2PC protocol to maintain database consistency among multiple machines. 
-
-To simplify the task, your KV store data is only stored in main memory. Also, the log in 2PC protocol is also only stored in main memory. 
-
-Detailed lab requirements are discussed below.
-
-### 3.2 KV store command formats
-
-Your KV store servers are only required to support three database commands: `SET`, `GET` and `DEL` commands (case sensitive). These commands (including arguments) and the return results are encapsulated into network messages using dedicated message format. For simplicity, all the keys and values are stored as strings in your KV store. 
-
-Further details are as follows:
-
-#### 3.2.1 Network message format
-
-In this lab, you should use a **simplified version** of RESP (REdis Serialization Protocol) message format to pass KV store commands from clients to servers (called request message) and pass command results from server to clients (called response message) . Specifically:
-
-##### 3.2.1.1 Client request message
-
-Clients send commands to the server using RESP Arrays (more details see `section 3.2.2`). RESP Arrays consist of:
-
-- A `*` character as the first byte, followed by the number of elements in the array as a decimal number, followed by CRLF.
-- Arbitrary number of bulk strings (up to 512 MB in length).
-
-The bulk string consist of:
-
-- A `$` byte followed by the number of bytes composing the string (a prefixed length), terminated by CRLF.
-- The actual string data.
-- A final CRLF.
-
-For example, the string `CS06142` is encoded as follows:
+例如，字符串 `CS06142` 编码如下：
 
 `$7\r\nCS06142\r\n`
 
-The bulk string `$7\r\nCS06142\r\n` start with a `$` byte, and the following number 7 indicate that the length of string `CS06142` is 7. Then, the terminated CRLF, actual string data `CS06142` and the final CRLF are next, consecutively.
+Bulk string `$7\r\nCS06142\r\n` 以 `$` 字节开头，后面的数字 7 表示字符串 `CS06142` 的长度为 7。接下来依次是终止符 CRLF，实际的字符串数据 `CS06142` 和最后的 CRLF。
 
-##### 3.2.1.2 Server response message
+### 3.2 服务器响应消息格式
 
-1)&ensp;Success message: 
+#### 1) 成功消息 (Success message)
 
-Success messages are encoded in the following way: a plus '+' character, followed by a string that cannot contain a CR or LF character (no newlines are allowed), terminated by CRLF (that is "\r\n").
+成功消息按以下方式编码：一个加号 '+' 字符，后跟一个不包含 CR 或 LF 字符（不允许换行）的字符串，以 CRLF 结尾（即 "\r\n"）。
 
-For example, the `SET` command reply with just "OK" on success (more details see `section 3.2.2`):
-
-`+OK\r\n`
-
-2)&ensp;Error message:
-
-Like success messages, error messages consist of: a minus '-' character, followed by a string, terminated by CRLF.
-
-For example, if an error occurs, just return (more details see `section 3.2.2`):
-
-`-ERROR\r\n` 
-
-3)&ensp;RESP Arrays message:
-
-Your server should return an RESP Arrays message when the `GET` command executed successfully (more detail see `section 3.2.2`).
-
-For example:
-
-`*2\r\n$5\r\nCloud\r\n$9\r\nComputing\r\n` 
-
-4)&ensp;Integer message:
-
-Some commands need to return an integer (e.g., `DEL` command, more details see `section 3.2.2`). An integer message is just a CRLF terminated string representing an integer, prefixed by a ":" byte.
-
-An integer message example: 
-
-`:1\r\n`
-
-#### 3.2.2 Database commands
-
-##### 3.2.2.1 SET command
-
-`SET key value`
-
-The function of the `SET` command is to set **key** to hold the string **value**. If key already holds a value, it is overwritten. For example, if you want to set key `CS06142` to hold the string `Cloud Computing`, the command would be:
-
-`SET CS06142 "Cloud Computing"`
-
-According to the message format we have discussed in `section 3.2.1`, this command would be encoded as a RESP message format:
-
-`*4\r\n$3\r\nSET\r\n$7\r\nCS06142\r\n$5\r\nCloud\r\n$9\r\nComputing\r\n`
-
-**Note:** The encoded message start with a `*` byte. The following number 4 indicate that there are 4 bulk strings in this message. These bulk strings are `$3\r\nSET\r\n`, `$7\r\nCS06142\r\n`, `$5\r\nCloud\r\n`, and `$9\r\nComputing\r\n`. 
-
-If the `SET` operation succeeds, the server will return a success message; otherwise, return an error message.
-
-For example, if the `SET` operation succeeds, the server just returns:
+例如，`SET` 命令成功时只需返回 "OK"：
 
 `+OK\r\n`
 
-Otherwise, it returns:
+#### 2) 错误消息 (Error message)
+
+与成功消息类似，错误消息由：一个减号 '-' 字符，后跟一个字符串，以 CRLF 结尾。
+
+例如，如果发生错误，返回：
 
 `-ERROR\r\n`
 
-##### 3.2.2.2 GET command
+#### 3) RESP Arrays 消息
 
-`GET key`
+当 `GET` 命令成功执行时，服务器应返回 RESP Arrays 消息。
 
-`GET` command can get the **value** of **key**. If the key does not exist the special value `nil` is returned.
-
-For example, if you want to check the value of the key `CS06142`, construct the command like this:
-
-`GET CS06142`
-
-Like the `GET` command, this command should be encoded as a specific message format before sending to the server. 
-
-`*2\r\n$3\r\nGET\r\n$7\r\nCS06142\r\n`
-
-If the `GET` command was executed correctly, the value (encoded as RESP Arrays format) of the key will be returned. 
-
-For example, if the command above executed correctly, return:
+例如：
 
 `*2\r\n$5\r\nCloud\r\n$9\r\nComputing\r\n`
 
-, assuming the value of the key `CS06142` is`Cloud Computing`.
+#### 4) 整数消息 (Integer message)
 
-If the key does no exist, just return:
+某些命令需要返回整数（例如，`DEL` 命令）。整数消息只是一个表示整数的 CRLF 结尾字符串，前面加上一个 ":" 字节。
 
-`*1\r\n$3\r\nnil\r\n`
-
-If an error occurs, return an error message:
-
-`-ERROR\r\n`
-
-##### 3.2.2.3 DEL command
-
-`DEL key1 key2 ...`
-
-The `DEL` command is used for removing one or more specified **keys** (arbitrary number, up to 512 MB message length). A key is ignored if it does not exist.
-
-The `DEL` command should return the number of keys that were removed.
-
-For example, if you want to delete key `CS06142` and key `CS162`, you can construct the `DEL` command:
-
-`DEL CS06142 CS162`
-
-Similar to the `SET` and `GET` commands, the `DEL` command will be encoded in RESP message as follows:
-
-`*3\r\n$3\r\nDEL\r\n$7\r\nCS06142\r\n$5\r\nCS162\r\n`
-
-The server will return the number of keys that were removed.
-
-For example, if the `DEL` command above executed, return an integer message:
+整数消息示例：
 
 `:1\r\n`
 
-**note:** Because we only set the key `CS06142` to hold a value. As for key `CS162`, it will be ignored because it does no exist. So, the number in the integer message is 1.
+### 3.3 数据库命令
 
-If an error occurs, return an error message:
+**注意：`key & value` 约定**
+
+在介绍具体指令规范之前，我们首先约定字符串规范。
+在实验中使用的命令中，可能附带两种类型的字符串：**key** 和 **value**。
+
+**key**：用作数据库索引的字符串，规定该字符串不包含空格 `' '`。
+
+**value**：用作数据库内容的字符串，规定该字符串可以包含空格 `' '`。
+
+#### 3.3.1 SET 命令
+
+`SET key value`
+
+`SET` 命令的功能是将 **key** 设置为持有字符串 **value**。如果 key 已经持有一个值，它将被覆盖。例如，如果您想设置 key `CS06142` 持有字符串 `Cloud Computing`，命令将是：
+
+`SET CS06142 "Cloud Computing"`
+
+根据我们在 `section 2.1` 中讨论过的消息格式，此命令将编码为 RESP 消息格式：
+
+`*4\r\n$3\r\nSET\r\n$7\r\nCS06142\r\n$5\r\nCloud\r\n$9\r\nComputing\r\n`
+
+**注意：** 编码后的消息以 `*` 字节开头。后面的数字 4 表示此消息中有 4 个 bulk strings。这些 bulk strings 是 `$3\r\nSET\r\n`，`$7\r\nCS06142\r\n`，`$5\r\nCloud\r\n` 和 `$9\r\nComputing\r\n`。
+
+如果 `SET` 操作成功，服务器将返回一个成功消息；否则，返回错误消息。
+
+例如，如果 `SET` 操作成功，服务器只返回：
+
+`+OK\r\n`
+
+否则，返回：
 
 `-ERROR\r\n`
 
-### 3.3 Use 2PC protocol to build a KV store on multiple servers(Basic Version)
+#### 3.3.2 GET 命令
 
-You should implement the coordinator and participant program. 
+`GET key`
 
-The **coordinator** does not store any data. It only receives and parses KV commands from clients, runs 2PC protocol to coordinates participants to conduct the KV commands consistently, and reply command results to clients. *There is only one coordinator in the whole system*.
+`GET` 命令可以获取 **key** 的 **value**。如果 key 不存在，则返回特殊值 `nil`。
 
-Each **participant** maintains a KV database in its main memory, and conduct KV commands sent from the coordinator, and return results to the coordinator. 
+例如，如果您想检查 key `CS06142` 的值，构造如下命令：
 
-You can use any message format for communication between the coordinator and participants. For example, you can also use the RESP format introduced before, or use some other RPC library.  
+`GET CS06142`
 
-### 3.4 Use Raft protocol to build a KV store on multiple servers(Advanced Version)
+与 `GET` 命令一样，此命令在发送到服务器之前应编码为特定的消息格式。
 
-Before implementing the advanced version, please carefully read the introduction to the raft algorithm in section 2.4.
+`*2\r\n$3\r\nGET\r\n$7\r\nCS06142\r\n`
 
-Several points to note here, because the test script needs to simulate communication between the client and your storage system, and since the generation of system leader is random, the test script is initially unknown. Therefore, the test script will randomly select a service to send a request. If the service is not a leader, the request needs to be rejected and the correct leader information returned, and the test script will initiate a request for the leader again.
+如果 `GET` 命令正确执行，将返回 key 的值（以 RESP Arrays 格式编码）。
 
-You can use any message format for communication between the leader and followers. For example, you can also use the RESP format introduced before, or use some other RPC library.
+例如，如果上述命令正确执行，返回：
 
-### 3.5 Run your program
+`*2\r\n$5\r\nCloud\r\n$9\r\nComputing\r\n`
 
-#### 3.5.1 Program arguments
+，假设 key `CS06142` 的值是 `Cloud Computing`。
 
-Enable long options to accept arguments in your program, just like lab2. There should be one and only one argument for your program: `--config_path`, which specifies the path of the configuration file. All the detailed configurations are written in the configuration file. Your program should read and parse the configuration file, and run as coordinator or participant accordingly. 
+如果 key 不存在，只需返回：
 
-***For basic version***, your program is called **kvstore2pcsystem**:
+`*1\r\n$3\r\nnil\r\n`
 
-run the **coordinator** process, just typing (`./src/coordinator.conf` is the coordinator's configuration file)
+如果发生错误，返回错误消息：
 
-`./kvstore2pcsystem --config_path ./src/coordinator.conf`
+`-ERROR\r\n`
 
-run the **participant** process, just typing (`./src/participant.conf` is the participant's configuration file)
+#### 3.3.3 DEL 命令
 
-`./kvstore2pcsystem --config_path ./src/participant.conf`
+`DEL key1 key2 ...`
 
-When you run the command above, your program should run correctly without any further inputs.
+`DEL` 命令用于删除一个或多个指定的 **keys**（任意数量，最多 512 MB 消息长度）。如果 key 不存在，则忽略。
 
-***For advanced version(specifically refers to the version implemented with raft)***, your program is called **kvstoreraftsystem**:
+`DEL` 命令应返回被删除的 keys 的数量。
 
-run the process with configuration file: 
+例如，如果您想删除 key `CS06142` 和 key `CS162`，您可以构造 `DEL` 命令：
 
-`./kvstoreraftsystem --config_path ./src/follower.conf`
+`DEL CS06142 CS162`
 
-When you run the command above, your program should run correctly without any further inputs.
+类似于 `SET` 和 `GET` 命令，`DEL` 命令将以 RESP 消息格式编码如下：
 
-#### 3.5.2 Configuration file format
+`*3\r\n$3\r\nDEL\r\n$7\r\nCS06142\r\n$5\r\nCS162\r\n`
 
-***For basic version***, a configuration file consists of two kinds of lines: 1) parameter line, and 2) comment line.
+服务器将返回被删除的 keys 的数量。
 
-- **A comment line** starts with a character '!'. The whole comment line are not parsed by the program.
-- **A parameter line** starts with a *parameter*, followed by a *value*. The parameter and value are separated by a whitespace. Parameter lines specify the necessary information that the coordinator or participants should know before running. There are three valid parameters: `mode`, `coordinator_info`, and `participant_info`.
-  - The parameter `mode` specifies that whether the program runs as a coordinator or a participant. Its value should only be either `coordinator` or `participant`. `mode` line is always *the first parameter line* in the configuration file.
-  - The parameter `coordinator_info` specifies the network address that the coordinator is listening on. Its value consists of the IP address and port number (separated by character ':'). Clients and participants can communicate with the coordinator using this network address.  Since there is only one coordinator, there is only one `coordinator_info` line in both coordinator's and participants' configuration file.
-  - The parameter `participant_info` consists of the network address that participant process is listening on. Its value consists of the IP address and port number (separated by character ':'). The coordinator can communicate with the participant using this network address. For participants, there is only one `participant_info` line in the configuration file, specifying its own network address; For the coordinator, there can be multiple `participant_info` lines in the configuration file, specifying the network addresses of all participants.
+例如，如果上述 `DEL` 命令执行，返回一个整数消息：
 
-Sample coordinator configuration file(**basic**):
+`:1\r\n`
 
-```tsconfig
-!
-! Coordinator configuration
-!      2023/05/05 11:25:33
-!
-! The argument name and value are separated by whitespace in the configuration file.
-!
-! Mode of process, coordinator OR participant
-mode coordinator
-!
-! The address and port the coordinator process is listening on.
-! Note that the address and port are separated by character ':'. 
-coordinator_info 127.0.0.1:8001
-!
-! Address and port information of all participants. 
-! Three lines specifies three participants' addresses.
-participant_info 127.0.0.1:8002 
-participant_info 127.0.0.1:8003 
-participant_info 127.0.0.1:8004
+**注意：** 因为我们假设只设置了 key `CS06142` 持有一个值。至于 key `CS162`，因为它不存在所以会被忽略。所以，整数消息中的数字是 1。
+
+如果发生错误，返回错误消息：
+
+`-ERROR\r\n`
+
+### 3.4 特殊响应类型
+
+由于 Raft 协议的特性，在某些情况下服务器可能返回特殊响应：
+
+#### TRYAGAIN 响应
+
+当服务器暂时无法处理请求时（例如在选举过程中）返回此响应。
+
+- **格式**: `+TRYAGAIN\r\n`
+- **客户端处理**: 客户端应稍后重试请求或尝试连接其他节点。
+
+#### MOVED 响应
+
+当请求发送到非 Leader 节点，且该节点知道当前的 Leader 是谁时返回此响应。
+
+- **格式**: `+MOVED <leader_id>\r\n` (其中 `<leader_id>` 是 Leader 节点的 ID)
+- **客户端处理**: 客户端应将请求重定向到指定的 Leader 节点。
+
+## 4. 配置文件格式
+
+服务器节点通过配置文件获取集群信息。配置文件格式如下：
+
+```
+# Raft集群配置
+# 格式：follower_info IP:PORT
+# 节点按照在配置文件中的顺序分配ID，从1开始
+
+# 节点1 - 客户端端口8001，Raft端口9001
+follower_info 192.168.66.201:8001
+
+# 节点2 - 客户端端口8002，Raft端口9002
+follower_info 192.168.66.202:8002
+
+# 节点3 - 客户端端口8003，Raft端口9003
+follower_info 192.168.66.203:8003
 ```
 
-Sample participant configuration file(**basic**):
+- 以 `#` 开头的行为注释
+- `follower_info IP:PORT` 定义集群中的节点：
+  - `IP`: 节点的 IP 地址
+  - `PORT`: 节点对客户端提供服务的端口号
+- 节点 ID 根据配置文件中 `follower_info` 的顺序从 1 开始分配
 
-```tsconfig
-!
-! Participant configuration
-!      2023/05/05 11:25:33
-!
-! The argument name and value are separated by whitespace in the configuration file.
-!
-! Mode of process, coordinator OR participant
-mode participant
-!
-! The address and port the participant process is listening on.
-participant_info 127.0.0.1:8002
-!
-! The address and port the coordinator process is listening on.
-coordinator_info 127.0.0.1:8001
+
+## 5. 编译与运行
+
+### 5.1 编译
+
+在项目根目录下执行以下命令进行编译：
+
+```bash
+make
 ```
 
-***For advanced version(specifically refers to the version implemented with raft)***, the parameter line of the configuration file is consistent with the basic version, except that the mode line is no longer required. 
+编译成功后将在根目录生成可执行文件 `kvstoreraftsystem`。
 
-The configuration files for each service are similar. In addition to specifying their own configuration information, they also provide configuration information for all other services in the cluster (this is required because they all need to communicate with each other, which is different from the implementation of 2PC).
+### 5.2 运行服务器节点
 
-Sample configuration file implemented with raft(**advanced**):
+通过以下命令启动一个服务器节点：
 
-```tsconfig
-!
-! configuration of advanced version
-!      2023/05/05 11:25:33
-!
-! The argument name and value are separated by whitespace in the configuration file.
-!
-! The address and port the follower process is listening on.
-follower_info 127.0.0.1:8001
-!
-! The address and port the other follower processes are listening on.
-follower_info 127.0.0.1:8002
-follower_info 127.0.0.1:8003
+```bash
+./kvstoreraftsystem --config_path <config_file_path>
 ```
 
-## 4 Implementation requirements
+例如：
 
-### 4.1 Basic version (18 points totally)
+```bash
+./kvstoreraftsystem --config_path ./conf/follower1.conf
+```
 
-In order to finish the new Lab4, you should finish 2nd level of Basic version in Lab3 at least.
+每个节点都需要独立启动，指定其对应的配置文件。
 
-If you want to get excellent score in Lab4, please try to finish [Section 4.2](#42-advanced-version20-points).
+## 6. 测试
 
-#### 4.1.1 1st level of Basic version(15 points)
+项目提供了测试脚本 `lab3_testing.sh` 用于自动化测试。
 
-Your program should complete all the tasks described in `section 3.1-3.4`. Your system is required to correctly receive and conduct the KV commands, and reply the corresponding results, as described before. 
+### 6.1 测试脚本使用方法
 
-In the 1st level of basic version, there will be **no participant failures**. Also, we will **not inject any network failures**. However, the network may still drop packets occasionally. You can use TCP to handle such occasional drops. 
+具体可见：https://github.com/LabCloudComputing/CloudComputing_Lab3_tester
 
-**The coordinator process may be killed and restart at any time for multiple times**. So do not store any database data in the coordinator. The coordinator will deal with clients' KV commands when it is working. When the coordinator is killed, your system is not required to reply any client's commands. Clients will keep retransmit its KV commands until it gets success response from the coordinator. The coordinator remembers no history (except for the information in the configuration file), so it will deal with all commands as new ones after it restarts.
+```bash
+./lab3_testing.sh [source_folder] [your_sudo_password] [result_folder] [version]
+```
 
-Your program should run correctly with 3 or more participants.
+参数说明：
 
-#### 4.1.2 2nd level of Basic version(16 points)
+- `<source_folder>`: 项目的根目录绝对路径
+- `<your_sudo_password>`: 用户密码
+- `<result_folder>`:存放测试结果的文件目录
+- `<version>`: 测试标识符，2是Raft版本
 
-Your program should complete all the tasks described in `section 3.1-3.4`. Your system is required to correctly receive and conduct the KV commands, and reply the corresponding results, as described before.  
+示例：
 
-In the 2nd level of Basic version, **participants may fail, and the network links may fail**. However, the participant and network link **failures are one-shot**, that is, if they fail, they will never come back again. Also, **the coordinator process may be killed and restart at any time for multiple times**. The coordinator will deal with clients' KV commands when it is working. When the coordinator is killed, your system is not required to reply any client's commands. 
+```bash
+./lab3_testing.sh ./Lab3 XXXXXX ./Lab3 2
+```
 
-When the coordinator is working, it should be able to detect the failure of participants. You can use some periodical heartbeat messages to detect the participant failure (e.g., no reply after certain number of heartbeats). **Once a participant is dead, the coordinator should be able to remove it from the system, and correctly receive/conduct/reply clients' KV commands with the rest participants**. If all participants fail, the coordinator will always reply ERROR to the clients' KV commands. The coordinator remembers no history (except for the information in the configuration file), so it need to redetect all the participants' liveness after restart.
+### 6.2 测试前准备
 
-Your program should run correctly with 3 or more participants.
+在运行测试脚本前，请确保：
 
-**NOTE**: **Groups that have registered for demo 3 should at least finish the advanced version.** 
+- 项目已成功编译
+- 配置文件已按测试要求准备好
+- 没有其他程序占用测试所需的端口
 
-#### 4.1.3 3rd level of Basic version(18 points)
+### 6.3 测试结果
 
-Your program should complete all the tasks described in `section 3.1-3.4`. Your system is required to correctly receive and conduct the KV commands, and reply the corresponding results, as described before.  
+测试脚本执行后会生成结果文件，记录每个测试用例的通过情况。成功的测试将标记为 PASS，失败的测试会显示具体的错误原因。
 
-In the 3rd level of Basic version, **participants may fail, and the network links may fail**. The participant and network link **failures can be both permanent or transient**, that is, if they fail, they may come back again at any time. Also, **the coordinator process may be killed and restart at any time for multiple times**. The coordinator will deal with clients' KV commands when it is working. When the coordinator is killed, your system is not required to reply any client's commands. 
+## 7. 实验要求
 
-When the coordinator is working, it should be able to detect **both failure and recovery** of participants. Once a participant is dead, the coordinator should be able to remove it from the system; Once a participant is recovered, the coordinator should be able to add it back to the system. Note that to keep database consistent, after a participant recovers from failure, you should copy the latest KV store database from some working participants to this recovered participant. We will not provide any copy protocols for you. You are encouraged to devise your own schemes as long as it is correct. You should be very careful about the consistency issue since the failures can be very complex and random. For example, considering the case that there are two participants A and B, A fails first and then A comes back and B fails later. During this procedure, client's may keep sending KV commands, so A needs to sync those new KV commands after coming back, otherwise it cannot server client's request correctly after B fails. 
+1. 实现一个能正确处理 SET、GET、DEL 命令的分布式 KV 存储系统
+2. 使用 Raft 协议确保多节点间的数据一致性
+3. 正确处理特殊响应（TRYAGAIN、MOVED）
+4. 系统应能适当处理节点故障和恢复
+5. 通过所有测试用例 （测试用例10 不一定每次都可以通过，有一次成功就可以）
 
-We will randomly inject failure and recovery to all the participants and network links. To ensure the database can be successfully copied, during our test, after a participant (or its network link) is recovered from failure, we will ensure that *no failures happen in the following 10 seconds* (no coordinator/participant/network failure). Your coordinator should be able to copy the latest database to the newly recovered participant in this 10 seconds. Moreover, we will always ensure that *there is at least one working participant* in the system. As such, the coordinator should be able to correctly receive/conduct/reply clients' KV commands during the failures and recoveries.
+## 8.提交要求
 
-Your program should run correctly with 3 or more participants.
+1. 补全指定位置代码
+2. 在Lab3文件夹（而不是Lab3的子文件夹下！）下必须有一个文件名为“小组名称+Lab3报告“的文件，此文件内需有通过测试的截图。 （助教会随机抽查一些小组，检验代码能否通过测试）
+   实验报告放相应截图就可以（必要），也可以把自己的一些实现的思考过程以及有价值的点写上去（非必要）。
 
-**NOTE**: **Groups that have registered for demo 4 should at least finish the 3rd level of Basic version** 
+## 9.评分标准
 
-### **4.2 Advanced version(20 points)**
-
-Since the coordinator may permanently fail, your system should also **be able to deal with clients' requests even when coordinator fails**. 2PC is not able to handle this problem. So in this version, you will not use 2PC protocol, but use some advanced consensus protocol to handle this case. 
-
-You can implement multiple KV store servers, where each server can receive requests from clients, stores data, and reply responses. Clients are preconfigured with all servers' addresses, and may send KV commands to any of the server, randomly. To keep consistency, normally there is only one leader server that deal with all the clients' requests, and backup the data in other servers. Clients' commands to other servers are all redirected to the leader. The consensus protocol can help servers to detect the failure of the leader server, and reelect a new leader. Also, the consensus protocol can help to maintain database consistency among multiple servers.
-
-[Raft](https://raft.github.io/) is a very good consensus protocol for this purpose. You may want to read its paper by yourself and use raft to implement this version (there are many open-sourced raft implementation that you can borrow). Sorry I'm not going to teach you this :) Of course, it is always good to use other consensus protocols or even your own schemes.
-
-**Tips for testing**:
-**When doing Advanced version, you should give [coordinator-type](#342-configuration-file-format) configuration files to all servers.** 
-
-**P.S.**
-**If you want to finish Lab4 excellently, `Raft` is a better choice than `2PC`.**
-
-**NOTE**: **This version is very difficult, so it is not compulsory but just a challenge. Have fun!**
-
-## 5. Lab submission
-
-Please put all your code in folder `Lab3` and write a `Makefile` so that we **can compile your code in one single command** `make`. The compiled runnable executable binary should be named `kvstore2pcsystem` and located in folder `Lab3`. Please carefully following above rules so that TAs can automatically test your code!!!
-
-You can use any available code or library for this lab. Please search the Internet. However, do not copy other teams' code. No performance test report is required for this lab. Enjoy the lab :)
-
-Please submit your lab program following the guidance in the [Overall Lab Instructions](../README.md) (`../README.md`)
-
-## 6. Lab3 tester
-
-You can find it in [lab3_tester](https://github.com/LabCloudComputing/CloudComputing_Lab3_tester).
-
-Test script of lab3 will update later in order to test Advance version.
-
-## 7. Grading standards
-
-* You can get 18 points if you can: 
-  
-  * finish all the requirements of the basic version
-
-* You can get 20 points (full score) if you can:
-  
-  * finish all the requirements of the advanced version
-
-If you missed some parts, you will get part of the points depending how much you finished.
+- **测试通过前九个测试单元**：20 分（满分）。
+- 部分完成按比例给分。

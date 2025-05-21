@@ -1,0 +1,7 @@
+{"timestamp": "2025-05-14 22:52:02", "message": "日志系统初始化完成", "details": {"time": "2025-05-14 22:52:02"}}
+{"timestamp": "2025-05-14 22:52:02", "message": "初始化应用", "details": {}}
+{"timestamp": "2025-05-14 22:52:02", "message": "发送RESP命令", "details": {"host": "115.157.197.176", "port": 8001, "cmd_length": 32, "cmd_preview": "*2\r\n$3\r\nGET\r\n$12\r\nllm_backends\r\n"}}
+{"timestamp": "2025-05-14 22:52:04", "message": "连接到Raft节点被拒绝", "details": {"host": "115.157.197.176", "port": 8001}}
+{"timestamp": "2025-05-14 22:52:04", "message": "发送RESP命令", "details": {"host": "115.157.197.176", "port": 8002, "cmd_length": 32, "cmd_preview": "*2\r\n$3\r\nGET\r\n$12\r\nllm_backends\r\n"}}
+{"timestamp": "2025-05-14 22:52:06", "message": "连接到Raft节点被拒绝", "details": {"host": "115.157.197.176", "port": 8002}}
+{"timestamp": "2025-05-14 22:52:06", "message": "发送RESP命令", "details": {"host": "115.157.197.176", "port": 8001, "cmd_length": 32, "cmd_preview": "*2\r\n$3\r\nGET\r\n$12\r\nllm_backends\r\n"}}
