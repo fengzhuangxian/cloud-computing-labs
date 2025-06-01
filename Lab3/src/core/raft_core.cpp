@@ -318,8 +318,8 @@ std::unique_ptr<Message> RaftCore::handleRequestVote(int from_node_id, const Req
     response->term = current_term_;
     response->vote_granted = false;// 默认不投票
     
-    //TODU:这里判断了状态，不应该加锁吗 DOWN
-    //所以应该加粗粒度的锁，将std::lock_guard<std::mutex> lock(vote_mutex_);移到这里
+
+    //加粗粒度的锁，将std::lock_guard<std::mutex> lock(vote_mutex_);移到这里
     std::lock_guard<std::mutex> lock(vote_mutex_);
     //节点状态，和voted都是原子变量，但还是要加锁，保证一次只处理一个消息，避免并发问题
     //该锁保护的变量有，节点状态，voted_, current_term_
@@ -362,8 +362,6 @@ std::unique_ptr<Message> RaftCore::handleRequestVote(int from_node_id, const Req
             }
 
             //如果任期和日志都满足条件，则授予投票
-            //TODU:这里为什么不更新current_term_？ DOWN
-            //TODU:这里为什么不更新leader_id_？因为实际上并不需要这个变量
             if (vote_term_flag==1 && vote_log_flag==1) {
                 current_term_ = request.term; // 更新当前任期
                 leader_id_ = request.candidate_id; // 更新领导者ID
