@@ -6,6 +6,7 @@
 
 #include "../utils/tools.h"
 #include "../include/constants.h"
+#include <algorithm>
 
 namespace raft {
 
@@ -85,7 +86,7 @@ void RaftCore::stop() {
     std::cout <<"[RaftCore:] " << "Node " << id_ << " stopped" << std::endl;
 }
 
-// 主循环
+// 主循环(一个线程)
 void RaftCore::mainLoop() {
     while (running_) {
         switch (state_) {
@@ -313,15 +314,73 @@ std::unique_ptr<Message> RaftCore::handleRequestVote(int from_node_id, const Req
     auto response = std::make_unique<RequestVoteResponse>();
     //Job1:收到来自其他节点的投票请求，补全代码，构造回复给请求者的回应信息
 
-
-
-
-
+    // 设置响应中的任期为当前任期
+    response->term = current_term_;
+    response->vote_granted = false;// 默认不投票
     
 
+    //加粗粒度的锁，将std::lock_guard<std::mutex> lock(vote_mutex_);移到这里
+    std::lock_guard<std::mutex> lock(vote_mutex_);
+    //节点状态，和voted都是原子变量，但还是要加锁，保证一次只处理一个消息，避免并发问题
+    //该锁保护的变量有，节点状态，voted_, current_term_
 
+    //仅在Follower状态下且没有投票处理投票请求
+    //TODU:如果是Candidate和LEADER状态，就一定不处理直接返回不投票吗，如果投票请求的任期比当前任期高呢
+    if(state_==NodeState::FOLLOWER){
+        // 1. 请求中的任期大于等于当前任期
+        // 2. 请求中的日志至少与当前节点一样新
+        // 3. 节点还未投票给其他节点
 
-    
+        //加锁,防止多个线程在vote_=flase时同时给多个节点投票
+        //给vote_mutex_加锁，保护voted_变量状态
+        //std::lock_guard<std::mutex> lock(vote_mutex_);
+        //已移到前面
+
+        //未投票且当前无leader时才可能投票
+        if(!voted_){
+
+            // 获取自己最后一条日志的信息，包括索引和任期
+            int last_log_index = log_store_->latest_index();
+            int last_log_term = log_store_->latest_term();
+
+            int vote_term_flag=0;//确认任期更新
+            int vote_log_flag=0;//确认日志至少一样新
+
+            if(request.term >= current_term_) {
+                vote_term_flag=1;
+                //current_term_=request.term;
+            }
+
+            //如果请求的最新日志任期大于当前节点的日志任期，则认为请求的日志更加新
+            if(request.last_log_term > last_log_term) {
+                vote_log_flag=1;
+            }
+
+            //如果请求的最新日志任期与当前节点的日志任期相同，且请求的最新日志索引大于等于当前节点的日志索引，则认为请求的日志更加新
+            if(request.last_log_term == last_log_term && request.last_log_index >= last_log_index) {
+                vote_log_flag=1;
+            }
+
+            //如果任期和日志都满足条件，则授予投票
+            if (vote_term_flag==1 && vote_log_flag==1) {
+                current_term_ = request.term; // 更新当前任期
+                leader_id_ = request.candidate_id; // 更新领导者ID
+                //构造投票信息
+                response->term = current_term_;
+                response->vote_granted = true;
+                voted_ = true;
+                std::cout<<"[RaftCore:] " << id_ << " 投票给节点 " << from_node_id  << std::endl;
+            }
+
+            // 重置心跳接收标志，避免立即触发新选举
+            // 这是因为followerloop中会检查received_heartbeat_来决定是否转换为候选者状态
+            // 收到投票请求的情况下，只有在follower状态且没投过票才表示自己收到心跳
+            // 若是Candidate和leader，则没有心跳变量，若是follower但已投过票，则接收心跳来重置这个变量
+            received_heartbeat_ = true;
+        }
+
+    }
+    //TODU:如果是Candidate和LEADER状态，就一定不处理直接返回不投票吗，如果投票请求的任期比当前任期高呢
 
     return response;
 }
@@ -339,14 +398,28 @@ void RaftCore::handleRequestVoteResponse(int from_node_id, const RequestVoteResp
     }
     //Job2:收到来自其他节点的投票回应，补全代码，做出对应的反应
 
+    // 加锁保护投票相关状态
+    std::lock_guard<std::mutex> lock(vote_mutex_);
 
+    // 如果收到的响应中任期大于当前任期，转为Follower
+    if (response.term > current_term_) {
+        becomeFollower(response.term);
+        return;
+    }
+    
+    // 如果收到投票
+    if (response.vote_granted) {
+        vote_count_++;
+        std::cout<<"[RaftCore:] " << id_ << " 当前获得票数: " << vote_count_ << std::endl;
+        
+        // 如果获得多数票，成为Leader
+        if (vote_count_ > cluster_size_ / 2) {
+            std::cout<<"[RaftCore:] " << id_ << " 获得多数票，成为leader" << std::endl;
+            becomeLeader();
+        }
+    }
 
-
-
-
-
-
-
+    return;
 }
 
 // 处理AppendEntries请求
@@ -357,15 +430,65 @@ std::unique_ptr<Message> RaftCore::handleAppendEntries(int from_node_id, const A
     auto response = std::make_unique<AppendEntriesResponse>();
     //Job3:收到来自leader节点的日志同步请求（心跳），补全代码，构造正确的回应消息
 
+    // 设置默认响应(未添加成功)
+    response->term = current_term_;
+    response->follower_id = id_;
+    response->log_index = log_store_->latest_index();
+    response->follower_commit = commit_index_;
+    response->ack = request.seq;
+    response->success = false;
+    
+    // 如果请求中的任期小于当前任期，拒绝请求
+    if (request.term < current_term_) {
+        return response;
+    }
+    
+    // 收到来自合法leader的心跳，重置接收标志
+    received_heartbeat_ = true;
+    
+    // 如果请求中的任期大于当前任期，转为Follower
+    if (request.term > current_term_) {
+        becomeFollower(request.term);
+    }
+    
+    // 检查日志一致性
+    if (request.prev_log_index > 0) {
+        // 如果前一个日志索引大于本地最新日志索引，或者任期不匹配，拒绝请求
+        if (request.prev_log_index > log_store_->latest_index() ||
+            log_store_->term_at(request.prev_log_index) != request.prev_log_term) {
+            return response;
+        }
+    }
 
-
-
-
-
-
-
-
-
+    std::lock_guard<std::mutex> lock(log_apply_mutex_);
+    
+    // 追加新的日志条目
+    for (size_t i = 0; i < request.entries.size(); i++) {
+        int current_index = request.prev_log_index + 1 + i;
+        // 如果当前索引的日志已存在且任期不同，删除从这个索引开始的所有日志
+        // if (current_index <= log_store_->latest_index() &&
+        //     log_store_->term_at(current_index) != request.entries[i].term) {
+        //     删除不一致的日志及其之后的所有日志
+        //     while (log_store_->latest_index() >= current_index) {
+        //         log_store_->pop_back();
+        //     }
+        // }
+        // 如果是新的日志条目，追加到日志中
+        if (current_index > log_store_->latest_index()) {
+            log_store_->append(request.entries[i].data, request.entries[i].term);
+        }
+    }
+    
+    // 更新提交索引
+    if (request.leader_commit > commit_index_) {
+        commit_index_ = std::min(request.leader_commit, log_store_->latest_index());
+    }
+    
+    // 设置响应成功
+    response->log_index = log_store_->latest_index();
+    response->follower_commit = commit_index_;
+    response->success = true;
+    
     return response;
 }
 
@@ -379,16 +502,49 @@ void RaftCore::handleAppendEntriesResponse(int from_node_id, const AppendEntries
     }
     //Job4:收到来自follower节点的日志同步回应，补全代码，做出正确的反应
 
-
-
-
-
-
-
-
-
-
+    // 如果收到的响应中任期大于当前任期，转为Follower
+    if (response.term > current_term_) {
+        becomeFollower(response.term);
+        return;
+    }
     
+    // 更新存活计数
+    if (response.success) {
+        live_count_ = LEADER_RESILIENCE_COUNT;
+    }
+    
+    // 如果是旧的响应，忽略
+    if (response.ack != seq_) {
+        return;
+    }
+    
+    // 处理成功的响应
+    if (response.success) {
+        // 使用互斥锁保护match_index_和match_term_的更新
+        std::lock_guard<std::mutex> lock(match_mutex_);
+        
+        int node_idx = nodeIdToIndex(response.follower_id);
+        if (node_idx >= 0 && node_idx < static_cast<int>(match_index_.size())) {
+            // 更新该节点的日志匹配信息
+            match_index_[node_idx] = response.log_index;
+            match_term_[node_idx] = log_store_->term_at(response.log_index);
+            
+            // 计算可以提交的新索引
+            std::vector<int> sorted_indices = match_index_;
+            // 对match_index_进行排序，选取中位数提交
+            std::sort(sorted_indices.begin(), sorted_indices.end());
+            int majority_index = sorted_indices[(cluster_size_ - 1) / 2];
+            
+            // 如果多数节点已复制且任期正确，更新提交索引
+            if (majority_index > commit_index_ && 
+                log_store_->term_at(majority_index) == current_term_) {
+                commit_index_ = majority_index;
+            }
+        }
+    } else {
+        // 如果失败，在下一次心跳时会自动重试
+        // 这里可以选择立即重试，但为了避免网络负载，我们等待下一次心跳
+    }
     
 }
 
@@ -432,6 +588,7 @@ void RaftCore::sendAppendEntries(int target_id, bool is_heartbeat) {
     int prev_log_index = 0;
     int prev_log_term = 0;
     {
+        // 使用互斥锁保护match_index_的访问
         std::lock_guard<std::mutex> lock(match_mutex_);
         
         int idx = nodeIdToIndex(target_id);
