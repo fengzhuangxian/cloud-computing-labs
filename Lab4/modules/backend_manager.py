@@ -211,8 +211,63 @@ def get_available_backend():
         dict: 选择的后端信息，包含backend_id字段
     """
     #Lab4 Job:补全代码
-
-
+    global backends
+    
+    with backend_lock:
+        # 1. 获取当前后端列表的副本
+        current_backends = backends.copy()
+    
+    # 2. 过滤出活跃后端
+    active_backends = []
+    total_weight = 0
+    for idx, backend in enumerate(current_backends):
+        if backend.get("status") == "active":
+            # 添加backend_id字段
+            backend_with_id = backend.copy()
+            backend_with_id["backend_id"] = idx
+            active_backends.append(backend_with_id)
+            total_weight += backend.get("weight", 1)
+    
+    # 3. 如果有可用后端
+    if active_backends and total_weight > 0:
+        # 使用加密安全随机数生成器
+        rand_point = secrets.randbelow(total_weight)
+        current_weight = 0
+        
+        # 加权随机选择
+        for backend in active_backends:
+            current_weight += backend.get("weight", 1)
+            if current_weight > rand_point:
+                log_info("选择后端", {
+                    "id": backend["backend_id"],
+                    "base_url": backend["base_url"],
+                    "model": backend["model"],
+                    "method": "加权随机"
+                })
+                return backend
+    
+    # 4. 如果没有可用后端，尝试激活部分故障后端
+    reactivated = False
+    for idx, backend in enumerate(current_backends):
+        if backend.get("status") == "inactive" and backend.get("failures", 0) < 5:
+            with backend_lock:
+                if idx < len(backends):
+                    backends[idx]["status"] = "active"
+                    reactivated = True
+                    log_info("自动激活后端", {
+                        "id": idx,
+                        "base_url": backend["base_url"],
+                        "model": backend["model"]
+                    })
+    
+    # 5. 如果有后端被重新激活，再次尝试选择
+    if reactivated:
+        return get_available_backend()
+    
+    # 6. 最终没有可用后端
+    log_info("没有可用后端", {"total_backends": len(current_backends)})
+    return None
+    
 
 
 
