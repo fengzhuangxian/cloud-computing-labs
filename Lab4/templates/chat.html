@@ -610,6 +610,9 @@
         const addBackendBtn = document.getElementById('add-backend-btn');
             const overlay = document.getElementById('overlay');
             
+            // 加载历史消息
+            loadHistoryMessages();
+
             // 加载后端列表
             loadBackendList();
             
@@ -793,6 +796,30 @@
             
             // 滚动到底部
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function loadHistoryMessages() {
+            fetch('/history')
+                .then(response => response.json())
+                .then(data => {
+                    const messagesContainer = document.getElementById('chat-messages');
+                    messagesContainer.innerHTML = ''; // 清空现有消息
+                    
+                    if (data.messages && data.messages.length > 0) {
+                        data.messages.forEach(msg => {
+                            addMessage(msg.role, msg.content);
+                        });
+                    } else {
+                        addMessage('system', '欢迎使用智能聊天系统，请在下方输入您的问题...');
+                    }
+
+                    // 滚动到底部
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                })
+                .catch(error => {
+                    console.error('加载历史消息失败:', error);
+                    addMessage('system', '加载历史消息失败，请稍后再试。');
+                });
         }
         
         function loadBackendList() {

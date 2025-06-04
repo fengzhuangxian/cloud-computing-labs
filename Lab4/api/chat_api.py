@@ -179,3 +179,22 @@ def chat():
         log_info("聊天请求处理错误", {"error": str(e), "details": error_details})
         return jsonify({"error": str(e)}), 500
 
+
+@chat_api.route("/history", methods=["GET"])
+def chat_history():
+    """
+    获取聊天历史记录
+    
+    返回:
+        JSON: 包含历史消息的JSON对象
+    """
+    try:
+        client_id = get_client_id()
+        messages = get_chat_history(client_id)
+        
+        return jsonify({"messages": messages})
+    
+    except Exception as e:
+        error_details = traceback.format_exc()
+        log_info("获取聊天历史错误", {"error": str(e), "details": error_details})
+        return jsonify({"error": str(e)}), 500
