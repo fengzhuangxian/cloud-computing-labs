@@ -4,135 +4,237 @@
 #include <algorithm>
 #include <thread>
 #include <chrono>
+#include <filesystem>
+#include <sstream>
 
-namespace raft {
+namespace raft
+{
 
-InMemoryLogStore::InMemoryLogStore(const std::string& filename) 
-    : file_name_(filename), committed_idx_(0) {
-    // 初始化日志，插入一个空白条目作为索引0
-    entries_.push_back("");
-    terms_.push_back(0);
-}
-
-InMemoryLogStore::~InMemoryLogStore() {
-    // 确保最后的日志被写入文件
-    write_to_file();
-}
-
-void InMemoryLogStore::append(const std::string& entry, int term) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    entries_.push_back(entry);
-    terms_.push_back(term);
-    write_to_file();
-}
-
-int InMemoryLogStore::latest_index() const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    return static_cast<int>(entries_.size()) - 1;
-}
-
-int InMemoryLogStore::latest_term() const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (entries_.size() <= 1) {
-        return 0;
+    InMemoryLogStore::InMemoryLogStore(const std::string &filename)
+        : file_name_(filename), committed_idx_(0)
+    {
+        // 初始化日志，插入一个空白条目作为索引0
+        std::lock_guard<std::mutex> lock(mtx_);
+        load_from_file(); // 启动时加载持久化数据
     }
-    return terms_.back();
-}
 
-std::string InMemoryLogStore::entry_at(int index) const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (index <= 0 || index >= static_cast<int>(entries_.size())) {
-        return "";
+    InMemoryLogStore::~InMemoryLogStore()
+    {
+        // 析构时确保数据已持久化
+        std::lock_guard<std::mutex> lock(mtx_);
+        write_to_file();
     }
-    return entries_[index];
-}
 
-int InMemoryLogStore::term_at(int index) const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (index < 0 || index >= static_cast<int>(terms_.size())) {
-        return 0;
+    void InMemoryLogStore::append(const std::string &entry, int term)
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        entries_.push_back(entry);
+        terms_.push_back(term);
+        write_to_file();
     }
-    return terms_[index];
-}
 
-void InMemoryLogStore::erase(int start, int end) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (start <= 0 || start > end || end >= static_cast<int>(entries_.size())) {
-        return;
+    int InMemoryLogStore::latest_index() const
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        return static_cast<int>(entries_.size()) - 1;
     }
-    
-    // 确保end不超过数组边界
-    end = std::min(end, static_cast<int>(entries_.size()) - 1);
-    
-    // 删除从start到end的日志条目
-    entries_.erase(entries_.begin() + start, entries_.begin() + end + 1);
-    terms_.erase(terms_.begin() + start, terms_.begin() + end + 1);
-    
-    // 删除对应的复制计数
-    for (int i = start; i <= end; ++i) {
-        num_.erase(i);
-    }
-    
-    // 更新已提交索引（如果需要）
-    //committed_idx_ = std::min(committed_idx_, start - 1);
-    
-    write_to_file();
-}
 
-void InMemoryLogStore::commit(int index) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (index > committed_idx_ && index < static_cast<int>(entries_.size())) {
-        committed_idx_ = index;
+    int InMemoryLogStore::latest_term() const
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (entries_.size() <= 1)
+        {
+            return 0;
+        }
+        return terms_.back();
     }
-}
 
-int InMemoryLogStore::committed_index() const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    return committed_idx_;
-}
+    std::string InMemoryLogStore::entry_at(int index) const
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (index <= 0 || index >= static_cast<int>(entries_.size()))
+        {
+            return "";
+        }
+        return entries_[index];
+    }
 
-void InMemoryLogStore::add_num(int index, int node_id) {
-    std::lock_guard<std::mutex> lock(mtx_);
-    // 确保索引有效
-    if (index < 0 || index >= static_cast<int>(entries_.size())) {
-        return;
+    int InMemoryLogStore::term_at(int index) const
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (index < 0 || index >= static_cast<int>(terms_.size()))
+        {
+            return 0;
+        }
+        return terms_[index];
     }
-    
-    // 确保该节点没有被记录过
-    auto& nodes = num_[index];
-    if (std::find(nodes.begin(), nodes.end(), node_id) == nodes.end()) {
-        nodes.push_back(node_id);
-    }
-}
 
-int InMemoryLogStore::get_num(int index) const {
-    std::lock_guard<std::mutex> lock(mtx_);
-    auto it = num_.find(index);
-    if (it == num_.end()) {
-        return 0;
-    }
-    return static_cast<int>(it->second.size());
-}
+    void InMemoryLogStore::erase(int start, int end)
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (start <= 0 || start > end || end >= static_cast<int>(entries_.size()))
+        {
+            return;
+        }
 
-void InMemoryLogStore::write_to_file() const {
-    // 将日志内容写入文件
-    // 延时2秒,模拟写入延迟
-    //std::this_thread::sleep_for(std::chrono::seconds(2));//大概2秒左右,千万不能干这个事，会阻塞
-    std::ofstream outfile(file_name_, std::ios::trunc); // 覆盖写入
-    
-    if (!outfile.is_open()) {
-        std::cerr << "无法打开日志文件: " << file_name_ << std::endl;
-        return;
-    }
-    
-    // 写入日志条目和对应的任期
-    for (size_t i = 1; i < entries_.size(); ++i) {
-        outfile << "index: " << i << "\tterm: " << terms_[i]  << std::endl;
-        outfile << "entry: " << entries_[i] << std::endl;
-        outfile << "-------------------------------------" << std::endl;
-    }
-    
-    outfile.close();
-}
+        // 确保end不超过数组边界
+        end = std::min(end, static_cast<int>(entries_.size()) - 1);
 
-} // namespace raft 
+        // 删除从start到end的日志条目
+        entries_.erase(entries_.begin() + start, entries_.begin() + end + 1);
+        terms_.erase(terms_.begin() + start, terms_.begin() + end + 1);
+
+        // 删除对应的复制计数
+        for (int i = start; i <= end; ++i)
+        {
+            num_.erase(i);
+        }
+
+        // 更新已提交索引（如果需要）
+        // committed_idx_ = std::min(committed_idx_, start - 1);
+
+        write_to_file();
+    }
+
+    void InMemoryLogStore::commit(int index)
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (index > committed_idx_ && index < static_cast<int>(entries_.size()))
+        {
+            committed_idx_ = index;
+            write_to_file(); // 立即持久化
+        }
+    }
+
+    int InMemoryLogStore::committed_index() const
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        return committed_idx_;
+    }
+
+    void InMemoryLogStore::add_num(int index, int node_id)
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        // 确保索引有效
+        if (index < 0 || index >= static_cast<int>(entries_.size()))
+        {
+            return;
+        }
+
+        // 确保该节点没有被记录过
+        auto &nodes = num_[index];
+        if (std::find(nodes.begin(), nodes.end(), node_id) == nodes.end())
+        {
+            nodes.push_back(node_id);
+            write_to_file(); // 立即持久化
+        }
+    }
+
+    int InMemoryLogStore::get_num(int index) const
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        auto it = num_.find(index);
+        if (it == num_.end())
+        {
+            return 0;
+        }
+        return static_cast<int>(it->second.size());
+    }
+
+    // void InMemoryLogStore::write_to_file() const {
+    //     // 将日志内容写入文件
+    //     // 延时2秒,模拟写入延迟
+    //     //std::this_thread::sleep_for(std::chrono::seconds(2));//大概2秒左右,千万不能干这个事，会阻塞
+    //     std::ofstream outfile(file_name_, std::ios::trunc); // 覆盖写入
+
+    //     if (!outfile.is_open()) {
+    //         std::cerr << "无法打开日志文件: " << file_name_ << std::endl;
+    //         return;
+    //     }
+
+    //     // 写入日志条目和对应的任期
+    //     for (size_t i = 1; i < entries_.size(); ++i) {
+    //         outfile << "index: " << i << "\tterm: " << terms_[i]  << std::endl;
+    //         outfile << "entry: " << entries_[i] << std::endl;
+    //         outfile << "-------------------------------------" << std::endl;
+    //     }
+
+    //     outfile.close();
+    // }
+
+    void InMemoryLogStore::load_from_file()
+    {
+        std::ifstream file(file_name_);
+        if (!file.is_open())
+            return;
+
+        // 读取元数据
+        std::string line;
+        if (std::getline(file, line))
+        {
+            std::istringstream meta_ss(line);
+            meta_ss >> committed_idx_;
+        }
+
+        // 读取日志条目
+        while (std::getline(file, line))
+        {
+            std::istringstream ss(line);
+            int term, rep_count;
+            std::string entry;
+
+            if (std::getline(ss, entry, '\t') &&
+                ss >> term >> rep_count)
+            {
+
+                entries_.push_back(entry);
+                terms_.push_back(term);
+
+                // 读取复制节点ID
+                std::vector<int> nodes;
+                for (int i = 0; i < rep_count; ++i)
+                {
+                    int node_id;
+                    if (ss >> node_id)
+                    {
+                        nodes.push_back(node_id);
+                    }
+                }
+                num_[entries_.size()] = nodes; // 索引从1开始
+            }
+        }
+    }
+
+    void InMemoryLogStore::write_to_file() const
+    {
+        std::ofstream file(file_name_, std::ios::trunc);
+        if (!file.is_open())
+            return;
+
+        // 写入元数据
+        file << committed_idx_ << "\n";
+
+        // 写入日志条目
+        for (size_t i = 0; i < entries_.size(); ++i)
+        {
+            const int index = i + 1;
+            const auto &nodes = num_.find(index);
+            int rep_count = (nodes != num_.end()) ? nodes->second.size() : 0;
+
+            file << entries_[i] << "\t"
+                 << terms_[i] << "\t"
+                 << rep_count;
+
+            // 写入节点ID
+            if (nodes != num_.end())
+            {
+                for (int node_id : nodes->second)
+                {
+                    file << "\t" << node_id;
+                }
+            }
+            file << "\n";
+        }
+    }
+
+} // namespace raft
