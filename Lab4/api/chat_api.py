@@ -30,7 +30,9 @@ def get_client_id():
         client_ip = request.environ['HTTP_X_FORWARDED_FOR']
     
     # 简单的哈希处理，避免直接使用IP
-    client_id = f"client_{hash(client_ip) % 10000:04d}"
+    # client_id = f"client_{hash(client_ip) % 10000:04d}"
+    client_id = f"client_{client_ip}"  # 使用IP地址作为标识
+    
     return client_id
 
 class TimeoutError(Exception):
