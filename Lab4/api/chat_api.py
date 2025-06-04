@@ -200,3 +200,24 @@ def chat_history():
         error_details = traceback.format_exc()
         log_info("获取聊天历史错误", {"error": str(e), "details": error_details})
         return jsonify({"error": str(e)}), 500
+    
+
+@chat_api.route("/history", methods=["DELETE"])
+def clear_chat_history():
+    """
+    清除聊天历史记录
+    
+    返回:
+        JSON: 操作结果
+    """
+    try:
+        client_id = get_client_id()
+        save_chat_history(client_id, [])  # 清空历史记录
+        
+        log_info("清除聊天历史", {"client_id": client_id})
+        return jsonify({"message": "聊天历史已清除"})
+    
+    except Exception as e:
+        error_details = traceback.format_exc()
+        log_info("清除聊天历史错误", {"error": str(e), "details": error_details})
+        return jsonify({"error": str(e)}), 500
