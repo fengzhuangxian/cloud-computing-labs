@@ -10,6 +10,7 @@ from modules.chat_history import get_chat_history, save_chat_history
 from modules.llm_client import create_client
 from modules.backend_manager import get_available_backend
 from config import DEFAULT_MODEL
+import hashlib
 
 # 创建蓝图
 chat_api = Blueprint('chat_api', __name__)
@@ -30,7 +31,11 @@ def get_client_id():
         client_ip = request.environ['HTTP_X_FORWARDED_FOR']
     
     # 简单的哈希处理，避免直接使用IP
-    client_id = f"client_{hash(client_ip) % 10000:04d}"
+    # client_id = f"client_{hash(client_ip) % 10000:04d}"
+    client_id = f"client_{client_ip}"  # 使用IP地址作为标识
+    # 使用稳定哈希算法MD5并截断
+    client_id = f"client_{hashlib.md5(client_ip.encode()).hexdigest()[:8]}"
+    
     return client_id
 
 class TimeoutError(Exception):
@@ -179,3 +184,43 @@ def chat():
         log_info("聊天请求处理错误", {"error": str(e), "details": error_details})
         return jsonify({"error": str(e)}), 500
 
+
+@chat_api.route("/history", methods=["GET"])
+def chat_history():
+    """
+    获取聊天历史记录
+    
+    返回:
+        JSON: 包含历史消息的JSON对象
+    """
+    try:
+        client_id = get_client_id()
+        messages = get_chat_history(client_id)
+        
+        return jsonify({"messages": messages})
+    
+    except Exception as e:
+        error_details = traceback.format_exc()
+        log_info("获取聊天历史错误", {"error": str(e), "details": error_details})
+        return jsonify({"error": str(e)}), 500
+    
+
+@chat_api.route("/history", methods=["DELETE"])
+def clear_chat_history():
+    """
+    清除聊天历史记录
+    
+    返回:
+        JSON: 操作结果
+    """
+    try:
+        client_id = get_client_id()
+        save_chat_history(client_id, [])  # 清空历史记录
+        
+        log_info("清除聊天历史", {"client_id": client_id})
+        return jsonify({"message": "聊天历史已清除"})
+    
+    except Exception as e:
+        error_details = traceback.format_exc()
+        log_info("清除聊天历史错误", {"error": str(e), "details": error_details})
+        return jsonify({"error": str(e)}), 500

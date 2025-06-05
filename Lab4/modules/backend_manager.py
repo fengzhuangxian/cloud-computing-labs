@@ -268,12 +268,15 @@ def get_available_backend():
     log_info("没有可用后端", {"total_backends": len(current_backends)})
     return None
     
+<<<<<<< HEAD
 
 
 
 
 
 
+=======
+>>>>>>> 4de8b16bcf40bf7f580d25170bebae074c2dc65c
 
 def mark_backend_failure(backend_id_or_info):#暂时没用上
     """标记后端失败"""
