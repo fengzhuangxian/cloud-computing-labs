@@ -2,6 +2,24 @@
 配置文件 - 所有系统配置参数集中管理
 """
 import os
+from cryptography.fernet import Fernet
+
+# 密钥存储路径
+FERNET_KEY_FILE = "fernet_key.txt"
+
+def get_or_create_fernet_key():
+    """获取或创建Fernet密钥"""
+    if os.path.exists(FERNET_KEY_FILE):
+        with open(FERNET_KEY_FILE, "rb") as f:
+            return f.read()
+    else:
+        key = Fernet.generate_key()
+        with open(FERNET_KEY_FILE, "wb") as f:
+            f.write(key)
+        return key
+
+# 全局加密密钥
+FERNET_KEY = get_or_create_fernet_key()
 
 # 服务器配置
 HOST = "0.0.0.0"
