@@ -77,7 +77,6 @@ namespace raft
 
         // 将日志内容写入文件
         void write_to_file() const;
-        void load_from_file();
     };
 
 } // namespace raft
