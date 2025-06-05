@@ -45,6 +45,12 @@ namespace raft
 
         for (const auto &[key, value] : store_)
         {
+            // 检查键和值是否包含换行符
+            if (key.find('\n') != std::string::npos || value.find('\n') != std::string::npos)
+            {
+                throw std::runtime_error("Key or value contains newline character");
+            }
+
             // 写入键长度 + 键内容
             uint32_t key_size = key.size();
             out.write(reinterpret_cast<const char *>(&key_size), sizeof(key_size));
@@ -54,10 +60,12 @@ namespace raft
             uint32_t value_size = value.size();
             out.write(reinterpret_cast<const char *>(&value_size), sizeof(value_size));
             out.write(value.data(), value_size);
+
+            // 添加换行符分隔键值对
+            out.write("\n", 1);
         }
     }
 
-    // 从快照文件恢复数据
     bool KVStore::restore_from_snapshot(const std::string &snapshot_file)
     {
         std::lock_guard<std::mutex> lock(mtx_);
@@ -67,7 +75,7 @@ namespace raft
             return false; // 文件不存在视为正常（首次启动）
         }
 
-        store_.clear(); // 清空当前数据
+        store_.clear();
 
         while (true)
         {
@@ -89,7 +97,26 @@ namespace raft
             std::string value(value_size, '\0');
             in.read(&value[0], value_size);
 
+            // 检查键和值是否包含换行符
+            if (key.find('\n') != std::string::npos || value.find('\n') != std::string::npos)
+            {
+                throw std::runtime_error("Corrupted snapshot: key or value contains newline");
+            }
+
             store_.emplace(std::move(key), std::move(value));
+
+            // 读取并验证换行符
+            char newline;
+            in.read(&newline, 1);
+            if (in.eof())
+            {
+                // 文件结束是正常的（最后一个键值对）
+                break;
+            }
+            if (newline != '\n')
+            {
+                throw std::runtime_error("Invalid snapshot format: expected newline");
+            }
         }
 
         return true;
