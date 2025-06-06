@@ -10,11 +10,15 @@ FERNET_KEY_FILE = "fernet_key.txt"
 def get_or_create_fernet_key():
     """获取或创建Fernet密钥"""
     if os.path.exists(FERNET_KEY_FILE):
+        # 确保现有文件权限安全
+        os.chmod(FERNET_KEY_FILE, 0o600)  # 仅所有者可读写
         with open(FERNET_KEY_FILE, "rb") as f:
             return f.read()
     else:
         key = Fernet.generate_key()
-        with open(FERNET_KEY_FILE, "wb") as f:
+        # 使用更安全的创建方式
+        fd = os.open(FERNET_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
             f.write(key)
         return key
 
