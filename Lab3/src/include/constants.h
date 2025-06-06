@@ -4,7 +4,7 @@
 namespace raft {
 
 // 网络相关常量
-constexpr int MAX_BUFFER_SIZE = 32768;        // 最大缓冲区大小
+constexpr int MAX_BUFFER_SIZE = 16384;        // 最大缓冲区大小
 constexpr int MAX_CONNECTION_QUEUE = 10;     // 最大连接队列长度
 constexpr int MAX_EVENT = 20;                // epoll一次处理的最大事件数
 constexpr int EPOLL_TIMEOUT_MS = 100;        // epoll等待超时时间(ms)
