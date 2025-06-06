@@ -44,7 +44,7 @@ RAFT_PORTS = [8001, 8002, 8003]  # 默认的Raft节点端口
 RAFT_TIMEOUT = 3  # 连接超时秒数
 
 # 聊天历史配置
-MAX_HISTORY_CHARS = 100000  # 聊天历史最大字符数(实际为Lab3限制的32k)
+MAX_HISTORY_CHARS = 10000  #智能截取设置
 
 # 日志配置
 LOG_FILE = "log.txt"
