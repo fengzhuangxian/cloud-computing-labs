@@ -2,6 +2,28 @@
 配置文件 - 所有系统配置参数集中管理
 """
 import os
+from cryptography.fernet import Fernet
+
+# 密钥存储路径
+FERNET_KEY_FILE = "fernet_key.txt"
+
+def get_or_create_fernet_key():
+    """获取或创建Fernet密钥"""
+    if os.path.exists(FERNET_KEY_FILE):
+        # 确保现有文件权限安全
+        os.chmod(FERNET_KEY_FILE, 0o600)  # 仅所有者可读写
+        with open(FERNET_KEY_FILE, "rb") as f:
+            return f.read()
+    else:
+        key = Fernet.generate_key()
+        # 使用更安全的创建方式
+        fd = os.open(FERNET_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(key)
+        return key
+
+# 全局加密密钥
+FERNET_KEY = get_or_create_fernet_key()
 
 # 服务器配置
 HOST = "0.0.0.0"
@@ -22,7 +44,7 @@ RAFT_PORTS = [8001, 8002, 8003]  # 默认的Raft节点端口
 RAFT_TIMEOUT = 3  # 连接超时秒数
 
 # 聊天历史配置
-MAX_HISTORY_CHARS = 10000  # 聊天历史最大字符数
+MAX_HISTORY_CHARS = 10000  #智能截取设置
 
 # 日志配置
 LOG_FILE = "log.txt"

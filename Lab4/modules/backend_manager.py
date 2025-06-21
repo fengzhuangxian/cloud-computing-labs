@@ -8,6 +8,8 @@ import secrets  # 导入更安全的随机数生成模块
 from utils.logger import log_info
 from modules.resp_handler import raft_set, raft_get, resp_decode
 from config import DEFAULT_BACKENDS
+from cryptography.fernet import Fernet, InvalidToken
+from config import FERNET_KEY
 
 # 后端列表（全局变量）
 backends = []
@@ -42,16 +44,24 @@ def load_backends_from_store():
         resp = raft_get("llm_backends")
         backends_data = resp_decode(resp)
         
+        loaded_backends = []
         if isinstance(backends_data, list):
-            return backends_data
-        
-        if isinstance(backends_data, str):
+            loaded_backends = backends_data
+        elif isinstance(backends_data, str):
             try:
-                return json.loads(backends_data)
+                loaded_backends = json.loads(backends_data)
             except:
                 pass
                 
-        return []
+        # 解密API密钥
+        decrypted_backends = []
+        for backend in loaded_backends:
+            backend_copy = backend.copy()
+            # 解密API密钥
+            backend_copy["api_key"] = decrypt_api_key(backend_copy.get("api_key", ""))
+            decrypted_backends.append(backend_copy)
+        
+        return decrypted_backends
     except Exception as e:
         log_info("加载后端列表失败", {"error": str(e)})
         return []
@@ -65,7 +75,15 @@ def save_backends_to_store():
             #这里有点问题，不设置新后端这儿会导致删除不成功，重新刷新后出现已有后端（因为没有修改数据库），可以在删除后端检测后端数量，不能少于一
             return False
             
-        backends_json = json.dumps(backends)
+        # 创建加密副本
+        encrypted_backends = []
+        for backend in backends:
+            backend_copy = backend.copy()
+            # 加密API密钥
+            backend_copy["api_key"] = encrypt_api_key(backend_copy.get("api_key", ""))
+            encrypted_backends.append(backend_copy)
+        
+        backends_json = json.dumps(encrypted_backends)
         raft_set("llm_backends", backends_json)
         return True
     except Exception as e:
@@ -298,3 +316,32 @@ def mark_backend_failure(backend_id_or_info):#暂时没用上
                         log_info("后端标记为不可用", {"id": i, "base_url": base_url, "model": model})
                     save_backends_to_store()
                     break 
+
+def encrypt_api_key(api_key: str) -> str:
+    """加密API密钥"""
+    if not api_key or api_key == "ollama":  # 跳过默认值
+        return api_key
+        
+    try:
+        fernet = Fernet(FERNET_KEY)
+        encrypted = fernet.encrypt(api_key.encode())
+        return encrypted.decode()  # 转为字符串存储
+    except Exception as e:
+        log_info("API密钥加密失败", {"error": str(e)})
+        return api_key  # 失败时返回原始值
+    
+def decrypt_api_key(encrypted_str: str) -> str:
+    """解密API密钥"""
+    if not encrypted_str or encrypted_str == "ollama":  # 跳过默认值
+        return encrypted_str
+        
+    try:
+        fernet = Fernet(FERNET_KEY)
+        decrypted = fernet.decrypt(encrypted_str.encode())
+        return decrypted.decode()
+    except InvalidToken:
+        log_info("API密钥解密失败 - 无效的令牌", {"key": encrypted_str[:6] + "..."})
+        return ""  # 返回空字符串避免使用无效密钥
+    except Exception as e:
+        log_info("API密钥解密失败", {"error": str(e)})
+        return ""  # 返回空字符串

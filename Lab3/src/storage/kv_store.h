@@ -4,35 +4,42 @@
 #include <string>
 #include <unordered_map>
 #include <mutex>
+#include <fstream>
 
-namespace raft {
+namespace raft
+{
 
-// KV存储类，作为状态机
-class KVStore {
-public:
-    KVStore() = default;
-    ~KVStore() = default;
+    // KV存储类，作为状态机
+    class KVStore
+    {
+    public:
+        KVStore() = default;
+        ~KVStore() = default;
 
-    // 获取键的值
-    std::string get(const std::string& key);
+        // 获取键的值
+        std::string get(const std::string &key);
 
-    // 设置键值
-    void set(const std::string& key, const std::string& value);
+        // 设置键值
+        void set(const std::string &key, const std::string &value);
 
-    // 删除键
-    void del(const std::string& key);
+        // 删除键
+        void del(const std::string &key);
 
-    // 清空所有存储
-    void clear();
+        // 清空所有存储
+        void clear();
 
-private:
-    // 存储的键值对
-    std::unordered_map<std::string, std::string> store_;
-    
-    // 保护存储操作的互斥锁
-    std::mutex mtx_;
-};
+        // 新增快照接口
+        void save_snapshot(const std::string &snapshot_file);
+        bool restore_from_snapshot(const std::string &snapshot_file);
+
+    private:
+        // 存储的键值对
+        std::unordered_map<std::string, std::string> store_;
+
+        // 保护存储操作的互斥锁
+        std::mutex mtx_;
+    };
 
 } // namespace raft
 
-#endif // KV_STORE_H 
+#endif // KV_STORE_H

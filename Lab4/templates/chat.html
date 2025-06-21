@@ -57,6 +57,44 @@
             font-weight: 600;
         }
         
+        .header-buttons {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        
+        .new-chat-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background-color: #5b48d1;
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+        
+        .new-chat-btn:hover {
+            background-color: #4a3ab8;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .new-chat-btn:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .new-chat-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+        
         .settings-btn {
             background-color: rgba(255,255,255,0.2);
             border: 1px solid rgba(255,255,255,0.4);
@@ -539,7 +577,16 @@
     <div class="container">
         <div class="header">
             <h1>智能聊天系统</h1>
-            <button class="settings-btn" id="settings-btn">后端设置</button>
+            <div class="header-buttons">
+                <button class="new-chat-btn" id="new-chat-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    新建会话
+                </button>
+                <button class="settings-btn" id="settings-btn">后端设置</button>
+            </div>
         </div>
         
         <div class="main">
@@ -607,9 +654,13 @@
             const settingsBtn = document.getElementById('settings-btn');
             const settingsContainer = document.getElementById('settings-container');
             const closeSettingsBtn = document.getElementById('close-settings');
-        const addBackendBtn = document.getElementById('add-backend-btn');
+            const addBackendBtn = document.getElementById('add-backend-btn');
             const overlay = document.getElementById('overlay');
+            const newChatBtn = document.getElementById('new-chat-btn');
             
+            // 加载历史消息
+            loadHistoryMessages();
+
             // 加载后端列表
             loadBackendList();
             
@@ -641,6 +692,9 @@
             
             // 添加后端事件
             addBackendBtn.addEventListener('click', addBackend);
+
+            // 新建会话按钮事件
+            newChatBtn.addEventListener('click', createNewChat);
             
             // 限制聊天容器大小
             limitChatContainerSize();
@@ -650,6 +704,7 @@
             
             // 添加获取客户端ID
             displayClientId();
+            
         });
         
         function limitChatContainerSize() {
@@ -794,6 +849,30 @@
             // 滚动到底部
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
+
+        function loadHistoryMessages() {
+            fetch('/history')
+                .then(response => response.json())
+                .then(data => {
+                    const messagesContainer = document.getElementById('chat-messages');
+                    messagesContainer.innerHTML = ''; // 清空现有消息
+                    
+                    if (data.messages && data.messages.length > 0) {
+                        data.messages.forEach(msg => {
+                            addMessage(msg.role, msg.content);
+                        });
+                    } else {
+                        addMessage('system', '欢迎使用智能聊天系统，请在下方输入您的问题...');
+                    }
+
+                    // 滚动到底部
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                })
+                .catch(error => {
+                    console.error('加载历史消息失败:', error);
+                    addMessage('system', '加载历史消息失败，请稍后再试。');
+                });
+        }
         
         function loadBackendList() {
             fetch('/api/backends')
@@ -922,6 +1001,32 @@
             .catch(error => {
                 console.error("获取客户端ID失败:", error);
                 document.getElementById('client-id-display').textContent = '客户端ID: 获取失败';
+            });
+        }
+        
+        // 新建会话函数(清空当前会话记录)
+        function createNewChat() {
+            if (!confirm('确定要开始新的会话吗？当前会话记录将被清空。')) {
+                return;
+            }
+            
+            fetch('/history', {
+                method: 'DELETE',
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                // 清空消息容器
+                const messagesContainer = document.getElementById('chat-messages');
+                messagesContainer.innerHTML = '';
+                // 添加欢迎消息
+                addMessage('system', '欢迎使用智能聊天系统，请在下方输入您的问题...');
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                addMessage('system', '创建新会话失败: ' + error.message);
             });
         }
     </script>
