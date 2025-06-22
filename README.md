@@ -14,7 +14,7 @@
 
 ## Lab1：多线程解大量数独题
 
-实验要求见[这里](./Lab1)
+实验要求见[Lab1目录](https://github.com/fengzhuangxian/cloud-computing-labs/tree/master/Lab1)
 
 这是一个经典的**生产者-消费者**问题，主要练习**并发编程**。
 
@@ -29,11 +29,12 @@
 
 ## Lab2：高性能 HTTP Server 及 Proxy Server
 
-
+实验要求见[Lab2目录](https://github.com/fengzhuangxian/cloud-computing-labs/tree/master/Lab2)
 
 ## Lab3：基于Raft协议的分布式数据库
 
-
+实验要求见[Lab3目录](https://github.com/fengzhuangxian/cloud-computing-labs/tree/master/Lab3)
 
 ## Lab4：LLM聊天服务系统
 
+实验要求见[Lab4目录](https://github.com/fengzhuangxian/cloud-computing-labs/tree/master/Lab4)
