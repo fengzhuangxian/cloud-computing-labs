@@ -69,7 +69,7 @@
 
 关键设计：
 
-- 实验需要完成的是raft算法中**领导人选举**和**日志同步**的4个消息处理函数(投票请求，投票响应，日志同步请求，日志同步响应），这里我主要参考[raft算法官方网页]([Raft Consensus Algorithm](https://raft.github.io/))中的模拟器和[raft论文](https://raft.github.io/raft.pdf)
+- 实验需要完成的是raft算法中**领导人选举**和**日志同步**的4个消息处理函数(投票请求，投票响应，日志同步请求，日志同步响应），这里我主要参考[raft算法官方网页](https://raft.github.io/)中的模拟器和[raft论文](https://raft.github.io/raft.pdf)
 - 该数据库的KV存储使用的是C++ STL中的`unordered_map`类，原本并未实现持久化，我们在此基础上使用**快照**的方法将数据以文件的形式保存
 
 
@@ -110,4 +110,4 @@
 
 ## 其他
 
-本实验Lab1，Lab2，Lab3由我个人完成，Lab4由和ll同学合作完成，合作流程遵循git工作流，具体贡献/提交可在提交记录中查看
+本仓库合作流程遵循git工作流，具体贡献/提交可在[提交记录](https://github.com/fengzhuangxian/cloud-computing-labs/commits/master/)中查看
